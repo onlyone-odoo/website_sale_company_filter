@@ -11,26 +11,70 @@ class WebsiteSaleCustom(WebsiteSale):
         self, search, category, attrib_values, search_in_description=True
     ):
         """
-        Hereda el método original para agregar un filtro de productos por compañía
-        basado en el usuario del portal que ha iniciado sesión.
+        Hereda el método para sobreescribir completamente el dominio de búsqueda de productos
+        cuando un usuario de portal con una compañía específica está conectado.
         """
-        # Llama al método original para obtener el dominio base
-        domain = super(WebsiteSaleCustom, self)._get_shop_domain(
-            search, category, attrib_values, search_in_description
-        )
-
-        # Obtiene el usuario del portal y su compañía asignada
         user = request.env.user
 
-        # Se asegura de que el usuario sea un usuario del portal (no un usuario interno o público)
-        is_portal_user = user.has_group("base.group_portal")
+        # Comprobar si es un usuario de portal y si tiene una compañía asignada en su contacto.
+        # El grupo 'base.group_portal' identifica a los usuarios del portal.
+        is_portal_user_with_company = (
+            user.has_group("base.group_portal") and user.partner_id.company_id
+        )
 
-        if is_portal_user and user.partner_id.company_id:
-            # Crea el dominio adicional para filtrar por la compañía del usuario
-            company_domain = [("company_id", "=", user.partner_id.company_id.id)]
+        if not is_portal_user_with_company:
+            # Para usuarios públicos, internos o sin compañía, usar la lógica por defecto de Odoo.
+            return super(WebsiteSaleCustom, self)._get_shop_domain(
+                search, category, attrib_values, search_in_description
+            )
 
-            # Combina el dominio original con el nuevo dominio usando expression.AND
-            # Esto asegura que todos los filtros (búsqueda, categoría, etc.) se mantengan
-            domain = expression.AND([domain, company_domain])
+        # --- Lógica personalizada para usuarios de portal con compañía ---
+        # A partir de aquí, construimos un nuevo dominio desde cero para este tipo de usuario.
 
-        return domain
+        # 1. El dominio base ahora se filtra por la compañía del usuario.
+        #    También agregamos el chequeo 'sale_ok' que es fundamental para el e-commerce.
+        domains = [
+            [("sale_ok", "=", True)],
+            [("company_id", "=", user.partner_id.company_id.id)],
+        ]
+
+        # 2. Replicamos la lógica del método original para los otros filtros (búsqueda, categoría, etc.)
+        #    para no perder la funcionalidad del shop.
+        if search:
+            for srch in search.split(" "):
+                subdomains = [
+                    [("name", "ilike", srch)],
+                    [("product_variant_ids.default_code", "ilike", srch)],
+                ]
+                if search_in_description:
+                    subdomains.append([("website_description", "ilike", srch)])
+                    subdomains.append([("description_sale", "ilike", srch)])
+
+                # Hook para extensiones de otros módulos (buena práctica mantenerlo)
+                extra_subdomain = self._add_search_subdomains_hook(srch)
+                if extra_subdomain:
+                    subdomains.append(extra_subdomain)
+
+                domains.append(expression.OR(subdomains))
+
+        if category:
+            domains.append([("public_categ_ids", "child_of", int(category))])
+
+        if attrib_values:
+            attrib = None
+            ids = []
+            for value in attrib_values:
+                if not attrib:
+                    attrib = value[0]
+                    ids.append(value[1])
+                elif value[0] == attrib:
+                    ids.append(value[1])
+                else:
+                    domains.append([("attribute_line_ids.value_ids", "in", ids)])
+                    attrib = value[0]
+                    ids = [value[1]]
+            if attrib:
+                domains.append([("attribute_line_ids.value_ids", "in", ids)])
+
+        # 3. Combinamos todos los dominios con un AND.
+        return expression.AND(domains)
