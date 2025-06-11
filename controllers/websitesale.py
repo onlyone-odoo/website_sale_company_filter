@@ -7,6 +7,24 @@ _logger = logging.getLogger(__name__)
 
 
 class WebsiteSaleCustom(WebsiteSale):
+    def sale_product_domain(self):
+        domain = super().sale_product_domain()
+        domain = [
+            d for d in domain if not (isinstance(d, tuple) and d[0] == "company_id")
+        ]
+        _logger.info("Dominio en sale_product_domain: %s", domain)
+        return domain
+
+    def _shop_lookup_products(self, attrib_set, options, post, search, website):
+        # Loguear el dominio y contexto antes de la búsqueda
+        domain = self._get_shop_domain(
+            search, options.get("category"), options.get("attrib_values")
+        )
+        _logger.info("Dominio en _shop_lookup_products: %s", domain)
+        _logger.info("Contexto en _shop_lookup_products: %s", request.env.context)
+
+        return super()._shop_lookup_products(attrib_set, options, post, search, website)
+
     @http.route()
     def shop(
         self,
@@ -18,15 +36,14 @@ class WebsiteSaleCustom(WebsiteSale):
         ppg=False,
         **post
     ):
-        # Forzar allowed_company_ids con todas las compañías del usuario
         env = request.env(
             context=dict(
                 request.env.context,
                 allowed_company_ids=request.env.user.company_ids.ids,
+                website_id=request.website.id,
             )
         )
 
-        # Log del contexto para depuración
         _logger.info("Contexto en shop: %s", env.context)
         _logger.info("website_id en contexto: %s", env.context.get("website_id"))
         _logger.info(
@@ -34,18 +51,19 @@ class WebsiteSaleCustom(WebsiteSale):
             env.context.get("allowed_company_ids"),
         )
         _logger.info("Compañías permitidas (company_ids): %s", env.user.company_ids.ids)
+        _logger.info(
+            "Compañía del sitio web (website.company_id): %s",
+            request.website.company_id.id,
+        )
 
-        # Obtener el usuario portal conectado
         user = env.user
         company_id = (
             user.partner_id.company_id.id if user.partner_id.company_id else False
         )
 
-        # Si el usuario tiene una compañía asignada, filtrar productos por company_id
         if company_id:
             post["company_id"] = company_id
 
-        # Llamar al método original del shop con los parámetros modificados
         response = super(WebsiteSaleCustom, self).shop(
             page=page,
             category=category,
@@ -56,7 +74,6 @@ class WebsiteSaleCustom(WebsiteSale):
             **post
         )
 
-        # Si hay un company_id, aplicar el filtro adicional
         if company_id:
             response.qcontext["products"] = response.qcontext["products"].filtered(
                 lambda p: p.company_id.id == company_id
