@@ -1,82 +1,36 @@
+# -*- coding: utf-8 -*-
+
 from odoo import http
 from odoo.http import request
 from odoo.addons.website_sale.controllers.main import WebsiteSale
-import logging
-
-_logger = logging.getLogger(__name__)
+from odoo.osv import expression
 
 
 class WebsiteSaleCustom(WebsiteSale):
-    def sale_product_domain(self):
-        domain = super().sale_product_domain()
-        domain = [
-            d for d in domain if not (isinstance(d, tuple) and d[0] == "company_id")
-        ]
-        _logger.info("Dominio en sale_product_domain: %s", domain)
-        return domain
-
-    def _shop_lookup_products(self, attrib_set, options, post, search, website):
-        # Loguear el dominio y contexto antes de la búsqueda
-        domain = self._get_shop_domain(
-            search, options.get("category"), options.get("attrib_values")
-        )
-        _logger.info("Dominio en _shop_lookup_products: %s", domain)
-        _logger.info("Contexto en _shop_lookup_products: %s", request.env.context)
-
-        return super()._shop_lookup_products(attrib_set, options, post, search, website)
-
-    @http.route()
-    def shop(
-        self,
-        page=0,
-        category=None,
-        search="",
-        min_price=0.0,
-        max_price=0.0,
-        ppg=False,
-        **post
+    def _get_shop_domain(
+        self, search, category, attrib_values, search_in_description=True
     ):
-        env = request.env(
-            context=dict(
-                request.env.context,
-                allowed_company_ids=request.env.user.company_ids.ids,
-                website_id=request.website.id,
-            )
+        """
+        Hereda el método original para agregar un filtro de productos por compañía
+        basado en el usuario del portal que ha iniciado sesión.
+        """
+        # Llama al método original para obtener el dominio base
+        domain = super(WebsiteSaleCustom, self)._get_shop_domain(
+            search, category, attrib_values, search_in_description
         )
 
-        _logger.info("Contexto en shop: %s", env.context)
-        _logger.info("website_id en contexto: %s", env.context.get("website_id"))
-        _logger.info(
-            "allowed_company_ids en contexto: %s",
-            env.context.get("allowed_company_ids"),
-        )
-        _logger.info("Compañías permitidas (company_ids): %s", env.user.company_ids.ids)
-        _logger.info(
-            "Compañía del sitio web (website.company_id): %s",
-            request.website.company_id.id,
-        )
+        # Obtiene el usuario del portal y su compañía asignada
+        user = request.env.user
 
-        user = env.user
-        company_id = (
-            user.partner_id.company_id.id if user.partner_id.company_id else False
-        )
+        # Se asegura de que el usuario sea un usuario del portal (no un usuario interno o público)
+        is_portal_user = user.has_group("base.group_portal")
 
-        if company_id:
-            post["company_id"] = company_id
+        if is_portal_user and user.partner_id.company_id:
+            # Crea el dominio adicional para filtrar por la compañía del usuario
+            company_domain = [("company_id", "=", user.partner_id.company_id.id)]
 
-        response = super(WebsiteSaleCustom, self).shop(
-            page=page,
-            category=category,
-            search=search,
-            min_price=min_price,
-            max_price=max_price,
-            ppg=ppg,
-            **post
-        )
+            # Combina el dominio original con el nuevo dominio usando expression.AND
+            # Esto asegura que todos los filtros (búsqueda, categoría, etc.) se mantengan
+            domain = expression.AND([domain, company_domain])
 
-        if company_id:
-            response.qcontext["products"] = response.qcontext["products"].filtered(
-                lambda p: p.company_id.id == company_id
-            )
-
-        return response
+        return domain
